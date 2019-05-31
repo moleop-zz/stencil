@@ -27,26 +27,25 @@ __device__ float GetElement(const Matrix A, int row, int col){
   return A.elem[row * A.stride + col];
 }
 
-__device__ float GetNextValue(float Mat[BLOCKSIZE][BLOCKSIZE], int row, int col, int l, float newValue){
-  //newValue = Mat[row][l];
-//  if (row == 0) //|| row == BLOCKSIZE-1 || col == 0 || col%(BLOCKSIZE-1)==0)
-//    newValue += Mat[row+BLOCKSIZE-1][l]; //Mat[row][l-1] + Mat[row][l+1] + Mat[row+BLOCKSIZE-1][l];
-
-//  if (row != 0 && row != BLOCKSIZE-1 && col != 0 && col!=BLOCKSIZE)
-//    newValue  = Mat[row][l] + Mat[row][l-1] + Mat[row][l+1] + Mat[row+BLOCKSIZE][l] + Mat[row-BLOCKSIZE][l];
-
-  //if{
-    newValue = Mat[row][l];
-    if (l != 0) {newValue += Mat[row][l-1];}
-    //newValue += Mat[row-BLOCKSIZE-1][l];
-    /*
-    if (row == BLOCKSIZE-1){ newValue += Mat[row-BLOCKSIZE-1][l];
-    } else  newValue += Mat[row+BLOCKSIZE-1][l];
-    if (l == 0) { newValue += Mat[row][l+1];
-    } else newValue += Mat[row][l-1];
-    if (l == BLOCKSIZE-1) { newValue += Mat[row][l-1];
-    } else newValue += Mat[row][l+1];*/
-  return newValue;
+__device__ float GetNextValue(float Mat[BLOCKSIZE][BLOCKSIZE], int row, int col, float newValue){
+  if (row != 0 && row != BLOCKSIZE-1 && col != 0 && col!=BLOCKSIZE-1){
+    newValue = Mat[row][col] + Mat[row-1][col] + Mat[row+1][col] +Mat[row][col-1] + Mat[row][col+1];
+  }else{
+    newValue = Mat[row][col];
+    if (row == 0){  newValue += Mat[row+1][col];
+      if (col == 0) newValue += Mat[row][col+1];
+      else if (col == BLOCKSIZE-1) newValue += Mat[row][col-1];
+      else newValue += Mat[row][col+1] + Mat[row][col-1];
+    }
+    else if (row == BLOCKSIZE-1) {newValue += Mat[row-1][col];
+      if (col == 0) newValue += Mat[row][col+1];
+      else if (col == BLOCKSIZE-1) newValue += Mat[row][col-1];
+      else newValue += Mat[row][col+1] + Mat[row][col-1];
+    }
+    else if (col == 0) newValue += Mat[row][col+1] + Mat[row+1][col] + Mat[row-1][col];
+    else newValue += Mat[row][col-1] + Mat[row+1][col] + Mat[row-1][col];
+  }
+  return newValue/5;
   }
 
 
@@ -60,18 +59,16 @@ __global__ void StencilKernel(Matrix A){
   int row = threadIdx.y;
   int col = threadIdx.x;
 
-  Matrix submat = GetSubMatrix(A, blockRow, blockCol);
+  Matrix submat;
 
   for (int k = 0; k < (A.width/ BLOCKSIZE); ++k){
-
+    submat = GetSubMatrix(A, blockRow, k);
     __shared__ float Mat[BLOCKSIZE][BLOCKSIZE];
     Mat[row][col] = GetElement(submat, row, col);
     __syncthreads();
-    for (int l = 0; l < BLOCKSIZE; ++l){
-      //newValue = Mat[row][l] + 1 ;
-      newValue = GetNextValue(Mat, row, col, l, newValue);
-      //newValue  = Mat[row][l] + Mat[row][l-1] + Mat[row][l+1] + Mat[row+BLOCKSIZE][l] + Mat[row-BLOCKSIZE][l];
-    }
+
+    newValue = GetNextValue(Mat, row, col, newValue);
+    __syncthreads();
   }
   SetElement(submat, row, col, newValue);
 }
@@ -108,11 +105,12 @@ int main(int argc, char const *argv[]) {
   init_mat(h_mat);
   cudaMemcpy(d_mat.elem, h_mat.elem, size, cudaMemcpyHostToDevice);
 
-  dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional machen
+  dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional  
   dim3 grid (h_mat.width / threads.x, h_mat.height / threads.y);
+  for (int run = 0; run < 5;++run){
   StencilKernel<<<grid,threads>>>(d_mat);
   cudaMemcpy(h_mat.elem, d_mat.elem, size, cudaMemcpyDeviceToHost);
-
+  }
   print_mat(h_mat);
 
   cudaFree (d_mat.elem);
