@@ -1,6 +1,6 @@
 #include <iostream>
 
-#define BLOCKSIZE 32
+#define BLOCKSIZE 8
 
 typedef struct {
   int width;
@@ -9,13 +9,16 @@ typedef struct {
   float* elem;
 } Matrix;
 
-__device__ Matrix GetSubMatrix(Matrix A, int row, int col){
+__device__ Matrix GetSubMatrix(Matrix A, int row, int col, int num_gh){
 
   Matrix submat;
   submat.width = BLOCKSIZE;
   submat.height = BLOCKSIZE;
   submat.stride = A.stride;
-  submat.elem = &A.elem[A.stride * BLOCKSIZE * row + BLOCKSIZE * col];
+  if (row == 0 && col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE) * col];
+  else if (row == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE-num_gh) * col];
+  else if (col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE-num_gh) * row + (BLOCKSIZE) * col];
+  //submat.elem = &A.elem[A.stride * (BLOCKSIZE-num_gh) * row + (BLOCKSIZE-num_gh) * col];
   return submat;
 }
 
@@ -49,7 +52,7 @@ __device__ float GetNextValue(float Mat[BLOCKSIZE][BLOCKSIZE], int row, int col,
   }
 
 
-__global__ void StencilKernel(Matrix A){
+__global__ void StencilKernel(Matrix A, int num_gh){
 
   int blockRow = blockIdx.y;
   int blockCol = blockIdx.x;
@@ -61,17 +64,21 @@ __global__ void StencilKernel(Matrix A){
 
   Matrix submat;
 
-  for (int k = 0; k < (A.width/ BLOCKSIZE); ++k){
-    submat = GetSubMatrix(A, blockRow, k);
+  //for (int k = 0; k < (A.width/ BLOCKSIZE); ++k){
+  //  submat = GetSubMatrix(A, blockRow, k, num_gh);
+  //for (int iter = 0; iter < num_gh+1; ++iter){
+    submat = GetSubMatrix(A, blockRow, blockCol, num_gh);
     __shared__ float Mat[BLOCKSIZE][BLOCKSIZE];
     Mat[row][col] = GetElement(submat, row, col);
     __syncthreads();
 
     newValue = GetNextValue(Mat, row, col, newValue);
     __syncthreads();
-  }
-  SetElement(submat, row, col, newValue);
+
+    SetElement(submat, row, col, newValue);
+  //}
 }
+//}
 
 __host__ void init_mat(Matrix A){
   for (int i = 0; i < A.width*A.height; ++i){
@@ -88,28 +95,38 @@ __host__ void print_mat(Matrix A){
 
 int main(int argc, char const *argv[]) {
 
+  //Größe des Feldes
+  int size=32;
+  //Anzahl Iterationen
+  int iter=1;
+  //Anzahl der Ghostcells (Überlapp)
+  int num_gh = 0;
+  // interation ohne exchange
+  //int iter2=std::ceil(iter/num_gh);
+  //Ausgabedatei
+  char *filename="out.ppm";
+
   Matrix h_mat;
-  h_mat.width = 32;
-  h_mat.height = 32;
+  h_mat.width = size;
+  h_mat.height = size;
   h_mat.stride = h_mat.width;
-  //int N = h_mat.width * h_mat.height;
-  int size = h_mat.width * h_mat.height * sizeof(float);
-  h_mat.elem =(float*)malloc(size);
+  int mem = h_mat.width * h_mat.height * sizeof(float);
+  h_mat.elem =(float*)malloc(mem);
 
   Matrix d_mat;
   d_mat.width = h_mat.width;
   d_mat.height = h_mat.height;
   d_mat.stride = d_mat.width;
-  cudaMalloc(&d_mat.elem, size);
+  cudaMalloc(&d_mat.elem, mem);
 
   init_mat(h_mat);
-  cudaMemcpy(d_mat.elem, h_mat.elem, size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_mat.elem, h_mat.elem, mem, cudaMemcpyHostToDevice);
 
-  dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional  
-  dim3 grid (h_mat.width / threads.x, h_mat.height / threads.y);
-  for (int run = 0; run < 5;++run){
-  StencilKernel<<<grid,threads>>>(d_mat);
-  cudaMemcpy(h_mat.elem, d_mat.elem, size, cudaMemcpyDeviceToHost);
+  dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional
+  dim3 grid (std::ceil(h_mat.width / threads.x-num_gh), std::ceil(h_mat.height / threads.y-num_gh));
+  for (int run = 0; run < iter;++run){
+    StencilKernel<<<grid,threads>>>(d_mat, num_gh);
+    cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
   }
   print_mat(h_mat);
 
