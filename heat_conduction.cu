@@ -1,6 +1,6 @@
 #include <iostream>
 
-#define BLOCKSIZE 8
+#define BLOCKSIZE 8 
 
 typedef struct {
   int width;
@@ -15,10 +15,10 @@ __device__ Matrix GetSubMatrix(Matrix A, int row, int col, int num_gh){
   submat.width = BLOCKSIZE;
   submat.height = BLOCKSIZE;
   submat.stride = A.stride;
-  if (row == 0 && col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE) * col];
-  else if (row == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE-num_gh) * col];
-  else if (col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE-num_gh) * row + (BLOCKSIZE) * col];
-  //submat.elem = &A.elem[A.stride * (BLOCKSIZE-num_gh) * row + (BLOCKSIZE-num_gh) * col];
+  //if (row == 0 && col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE) * col];
+  //else if (row == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE) * row + (BLOCKSIZE-num_gh) * col];
+  //else if (col == 0) submat.elem = &A.elem[A.stride * (BLOCKSIZE-num_gh) * row + (BLOCKSIZE) * col];
+  submat.elem = &A.elem[A.stride * (BLOCKSIZE-1-num_gh) * row + (BLOCKSIZE-1-num_gh) * col];
   return submat;
 }
 
@@ -75,7 +75,33 @@ __global__ void StencilKernel(Matrix A, int num_gh){
     newValue = GetNextValue(Mat, row, col, newValue);
     __syncthreads();
 
-    SetElement(submat, row, col, newValue);
+  if (blockRow == 0 && blockCol == 0 ){
+	if (row != BLOCKSIZE-1   && col != BLOCKSIZE-1)
+		SetElement(submat, row, col, newValue);
+  }else if (blockRow == 0){
+   	if (col > 0 && col < BLOCKSIZE-1 && row != BLOCKSIZE-1)
+   		SetElement(submat, row, col-1*blockCol, newValue);
+  }else if (blockCol == 0){
+   	if (row > 0 && row < BLOCKSIZE-1 && col != BLOCKSIZE-1)
+   		SetElement(submat, row-1*blockRow, col, newValue);
+  }else{
+     	if (col != BLOCKSIZE-1 && row != 0 && row != BLOCKSIZE-1 && col != 0 )
+   		SetElement(submat, row-1*blockRow, col-1*blockCol, newValue);
+	// hier weiter machen
+  }else if (blockRow == grid.y && blockCol == grid.x ){
+	if (row < size % BLOCKSIZE-1   && col != BLOCKSIZE-1)
+		SetElement(submat, row, col, newValue);
+  }else if (blockRow == 0){
+   	if (col > 0 && col < BLOCKSIZE-1 && row != BLOCKSIZE-1)
+   		SetElement(submat, row, col-1*blockCol, newValue);
+  }else if (blockCol == 0){
+   	if (row > 0 && row < BLOCKSIZE-1 && col != BLOCKSIZE-1)
+   		SetElement(submat, row-1*blockRow, col, newValue);
+  }else{
+     	if (col != BLOCKSIZE-1 && row != 0 && row != BLOCKSIZE-1 && col != 0 )
+   		SetElement(submat, row-1*blockRow, col-1*blockCol, newValue);
+   }	   
+   }	   
   //}
 }
 //}
@@ -123,7 +149,8 @@ int main(int argc, char const *argv[]) {
   cudaMemcpy(d_mat.elem, h_mat.elem, mem, cudaMemcpyHostToDevice);
 
   dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional
-  dim3 grid (std::ceil(h_mat.width / threads.x-num_gh), std::ceil(h_mat.height / threads.y-num_gh));
+  dim3 grid (h_mat.width / (threads.x-2), h_mat.height / (threads.y-2));
+ // dim3 grid (std::ceil((double)h_mat.width / threads.x-num_gh), std::ceil((double)h_mat.height / threads.y-num_gh));
   for (int run = 0; run < iter;++run){
     StencilKernel<<<grid,threads>>>(d_mat, num_gh);
     cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
