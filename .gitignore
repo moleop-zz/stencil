@@ -1,3 +1,5 @@
 cond.out
 heat_cond
 stencil
+heat2.cu
+.heat_conduction.cu.swp
