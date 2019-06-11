@@ -1,6 +1,6 @@
 #include <iostream>
 
-#define BLOCKSIZE 16
+#define BLOCKSIZE 8
 
 typedef struct {
   int width;
@@ -15,7 +15,7 @@ __device__ Matrix GetSubMatrix(Matrix A, int row, int col, int num_gh){
   submat.width = BLOCKSIZE;
   submat.height = BLOCKSIZE;
   submat.stride = A.stride;
-  submat.elem = &A.elem[A.stride * (BLOCKSIZE-2-num_gh) * row   + (BLOCKSIZE-2-num_gh) * col];
+  submat.elem = &A.elem[A.stride * (BLOCKSIZE-2-2*num_gh) * row   + (BLOCKSIZE-2-2*num_gh) * col];
 
   return submat;
 }
@@ -24,13 +24,13 @@ __device__ void SetElement(Matrix A, int row, int col, float value){
   A.elem[row * A.stride + col] = value;
  }
 
-__device__ float GetElement(const Matrix A, int row, int col, int blockRow, int blockCol, dim3 grid, int size){
+__device__ float GetElement(const Matrix A, int row, int col, int blockRow, int blockCol, dim3 grid, int num_gh, int size){
   if (blockRow < grid.y-1 && blockCol < grid.x-1){
     return A.elem[row * A.stride + col];
   // Ausnahme für submatrix die am Rand liegt ... Auffüllen mit 0.
   }else{
     float tmp[BLOCKSIZE*BLOCKSIZE];
-    if (blockCol*(BLOCKSIZE-2)+col < size && blockRow*(BLOCKSIZE-2)+row < size){
+    if (blockCol*(BLOCKSIZE-2-2*num_gh)+col < size && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size){
       tmp[row*(BLOCKSIZE-1)+col] = A.elem[row * A.stride + col];
     }else tmp[row*(BLOCKSIZE-1)+col] = 0;
     return tmp[row*(BLOCKSIZE-1)+col];
@@ -74,47 +74,58 @@ __global__ void StencilKernel(Matrix A, dim3 grid, int num_gh, int size){
   //printf("%d ", row);
   Matrix submat;
 
+
     submat = GetSubMatrix(A, blockRow, blockCol, num_gh);
     __shared__ float Mat[BLOCKSIZE][BLOCKSIZE];
+  //  __shared__ float Mattemp[BLOCKSIZE][BLOCKSIZE];
 
 
-    Mat[row][col] = GetElement(submat, row, col, blockRow, blockCol, grid, size);
+    Mat[row][col] = GetElement(submat, row, col, blockRow, blockCol, grid, num_gh, size);
     __syncthreads();
-
+for (int i = 0; i < num_gh; ++i){
+    if (i != num_gh-1){
+    Mat[row][col] = GetNextValue(Mat, row, col, newValue);
+    __syncthreads();
+  } else {
     newValue = GetNextValue(Mat, row, col, newValue);
     __syncthreads();
+    }
+  }
+  // oben links, links, und oben
 
   if (blockRow == 0 && blockCol == 0 ){
-  	if (row != BLOCKSIZE-1   && col != BLOCKSIZE-1){
+  	if (row < BLOCKSIZE-1-num_gh && col < BLOCKSIZE-1-num_gh){
   		SetElement(submat, row, col, newValue);
   	}
   }else if (blockRow == 0 && blockCol != 0 && blockCol < grid.x-1){
-   	if (col > 0 && col < BLOCKSIZE-1 && row != BLOCKSIZE-1) // letzter Teil kann wahrscheinlich weg
+   	if (col > num_gh && col < BLOCKSIZE-1-num_gh && row < BLOCKSIZE-1-num_gh)
    		SetElement(submat, row, col, newValue);
 
   }else if (blockCol == 0 && blockRow != 0 && blockRow < grid.y-1){
-   	if (row > 0 && row < BLOCKSIZE-1 && col != BLOCKSIZE-1 )
+   	if (row > num_gh && row < BLOCKSIZE-1-num_gh && col < BLOCKSIZE-1-num_gh )
    		SetElement(submat, row, col, newValue);
 
-	// hier weiter mache
+	// oben rechts und rechts
 
-  }else if (blockCol == grid.x-1 && blockRow == 0){
-    if (row < BLOCKSIZE -1 && col > 0 && blockCol*(BLOCKSIZE-2)+col < size )
+}else if (blockCol == grid.x-1 && blockRow == 0){
+    if (row < BLOCKSIZE-1-num_gh && col > num_gh && blockCol*(BLOCKSIZE-2-2*num_gh)+col < size )
       SetElement(submat, row, col, newValue);
 
   }else if (blockCol == grid.x-1 && blockRow != 0){
-    if (row > 0 && row < BLOCKSIZE -1 && col > 0 && blockCol*(BLOCKSIZE-2)+col < size )
+    if (row > 0 && row < BLOCKSIZE-1-num_gh && col > num_gh && blockCol*(BLOCKSIZE-2-2*num_gh)+col < size )
       SetElement(submat, row, col, newValue);
 
 // unten und unten links
 
-  }else if (blockRow == grid.y-1 && blockCol == 0){
-      if (col < BLOCKSIZE -1 && row > 0 && blockRow*(BLOCKSIZE-2)+row < size )
+}else if (blockRow == grid.y-1 && blockCol == 0){
+      if (col < BLOCKSIZE-1-num_gh && row > num_gh && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size )
         SetElement(submat, row, col, newValue);
 
   }else if (blockRow == grid.y-1 && blockCol != 0){
-      if (col> 0 && col < BLOCKSIZE -1 && row > 0 && blockRow*(BLOCKSIZE-2)+row < size )
+      if (col> num_gh && col < BLOCKSIZE -1 && row > 0 && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size )
         SetElement(submat, row, col, newValue);
+
+  // Mitte
 
   }else if (blockCol != 0 && blockRow != 0 && blockCol != grid.x-1 && blockRow != grid.y-1){
      	if (col != BLOCKSIZE-1 && row != 0 && row != BLOCKSIZE-1 && col != 0 )
@@ -140,11 +151,11 @@ int main(int argc, char const *argv[]) {
   //Größe des Feldes
   int size=32;
   //Anzahl Iterationen
-  int iter=3;
+  int iter=2;
   //Anzahl der Ghostcells (Überlapp)
-  int num_gh = 0;
-  // interation ohne exchange
-  //int iter2=std::ceil(iter/num_gh);
+  int num_gh = 2;
+  //Anzahl Iterationen über global memory
+  int iter_glob = iter / num_gh;
   //Ausgabedatei
   char *filename="out.ppm";
 
@@ -164,11 +175,11 @@ int main(int argc, char const *argv[]) {
   init_mat(h_mat);
   cudaMemcpy(d_mat.elem, h_mat.elem, mem, cudaMemcpyHostToDevice);
 
-  dim3 threads(BLOCKSIZE, BLOCKSIZE); // 2 dimensional
-  dim3 grid (std::ceil((double)h_mat.width / (threads.x-2)),std::ceil((double)h_mat.height / (threads.y-2)));
+  dim3 threads(BLOCKSIZE, BLOCKSIZE);
+  dim3 grid (std::ceil((double)h_mat.width / (threads.x-2-2*num_gh)),std::ceil((double)h_mat.height / (threads.y-2-2*num_gh)));
   printf("grid.x = %d\n", grid.x);
   printf("gridy = %d\n", grid.y);
-  for (int run = 0; run < iter;++run){
+  for (int run = 0; run < iter_glob;++run){
     StencilKernel<<<grid,threads>>>(d_mat, grid, num_gh, size);
   }
   cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
