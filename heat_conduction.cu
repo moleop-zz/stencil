@@ -1,6 +1,6 @@
 #include <iostream>
 
-#define BLOCKSIZE 8
+#define BLOCKSIZE 16
 
 typedef struct {
   int width;
@@ -40,13 +40,15 @@ __device__ float GetElement(const Matrix A, int row, int col, int blockRow, int 
 
 __device__ float GetNextValue(float Mat[BLOCKSIZE][BLOCKSIZE], int row, int col, dim3 grid, int blockRow, int blockCol, int num_gh, int size, float newValue){
   // Matrizen die am Rand links oder/und unten liegen .. kein Update der Nullränder
-  if(blockCol == grid.y-1 || blockRow == grid.x-1){
-    if (row > 0 && row < BLOCKSIZE-1 && col > 0 && col < BLOCKSIZE-1 && blockCol*(BLOCKSIZE-2-2*num_gh)+col < size && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size){
-      newValue = Mat[row][col] + Mat[row-1][col] + Mat[row+1][col] + Mat[row][col-1] + Mat[row][col+1];
-    }
-  }
+ // if(blockRow == grid.y-1 || blockCol == grid.x-1){
+ //   if (blockCol*(BLOCKSIZE-2-2*num_gh)+col < size && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size){
+ //     newValue = Mat[row][col] + Mat[row-1][col] + Mat[row+1][col] + Mat[row][col-1] + Mat[row][col+1];
+ //   }
+ // }
   // Matrizen die nicht am Rand links oder unten liegen
-  else{
+ // else{
+
+  if (blockCol*(BLOCKSIZE-2-2*num_gh)+col < size && blockRow*(BLOCKSIZE-2-2*num_gh)+row < size){
     if (row != 0 && row != BLOCKSIZE-1 && col != 0 && col!=BLOCKSIZE-1){
       newValue = Mat[row][col] + Mat[row-1][col] + Mat[row+1][col] + Mat[row][col-1] + Mat[row][col+1];
     }else{
@@ -94,7 +96,7 @@ __global__ void StencilKernel(Matrix A, Matrix B, dim3 grid, int num_gh, int siz
   //Mattemp[row][col] = GetElement(submat, row, col, blockRow, blockCol, grid, num_gh, size);
   __syncthreads();
   for (int i = 0; i < num_gh+1; ++i){
-    if (i != num_gh){
+    if (i < num_gh){
       Mattemp[row][col] = GetNextValue(Mat, row, col, grid, blockRow, blockCol, num_gh, size, newValue);
       __syncthreads();
       Mat[row][col] = Mattemp[row][col];
@@ -175,13 +177,13 @@ int main(int argc, char const *argv[]) {
   //Größe des Feldes
   int size=32;
   //Anzahl Iterationen
-  int iter=1;
+  int iter=4;
   //Anzahl der Ghostcells (Überlapp)
-  int num_gh = 1;
+  int num_gh = 3;
   //Anzahl Iterationen über global memory
   int iter_glob;
   if (num_gh == 0) iter_glob = iter;
-  else iter_glob = iter / num_gh;
+  else iter_glob = iter / (num_gh+1);
   //Ausgabedatei
   char *filename="out.ppm";
 
