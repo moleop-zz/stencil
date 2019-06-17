@@ -1,4 +1,4 @@
-#include <iostream>
+#include <stdio.h>
 
 #define BLOCKSIZE 32
 
@@ -35,34 +35,34 @@ __device__ float GetElement(const Matrix A, int row, int col, int blockRow, int 
   }
 }
 
-__device__ float GetNextValue(float Mat[BLOCKSIZE][BLOCKSIZE], int row, int col, int limit_col, int limit_row, int size, float newValue){
+__device__ float GetNextValue(float Mat[BLOCKSIZE*BLOCKSIZE], int row, int col, int limit_col, int limit_row, int size, float newValue){
   if (limit_col < size && limit_row < size){
     if (row > 0 && row < BLOCKSIZE-1 && col > 0 && col < BLOCKSIZE-1){
-      newValue = 2*Mat[row][col] + Mat[row-1][col] + Mat[row+1][col] + Mat[row][col-1] + Mat[row][col+1];
+      newValue = 2*Mat[row*BLOCKSIZE+col] + Mat[(row-1)*BLOCKSIZE+col] + Mat[(row+1)*BLOCKSIZE+col] + Mat[row*BLOCKSIZE+col-1] + Mat[row*BLOCKSIZE+col+1];
     }else{
-      newValue = 2*Mat[row][col];
-      if (row == 0){  newValue += Mat[row+1][col];
-        if (col == 0) newValue += Mat[row][col+1];
-        else if (col == BLOCKSIZE-1) newValue += Mat[row][col-1];
-        else newValue += Mat[row][col+1] + Mat[row][col-1];
+      newValue = 2*Mat[row*BLOCKSIZE+col];
+      if (row == 0){  newValue += Mat[(row+1)*BLOCKSIZE+col];
+        if (col == 0) newValue += Mat[row*BLOCKSIZE+col+1];
+        else if (col == BLOCKSIZE-1) newValue += Mat[row*BLOCKSIZE+col-1];
+        else newValue += Mat[row*BLOCKSIZE+col+1] + Mat[row*BLOCKSIZE+col-1];
       }
-      else if (row == BLOCKSIZE-1) { newValue += Mat[row-1][col];
-        if (col == 0) newValue += Mat[row][col+1];
-        else if (col == BLOCKSIZE-1) newValue += Mat[row][col-1];
-        else newValue += Mat[row][col+1] + Mat[row][col-1];
+      else if (row == BLOCKSIZE-1) { newValue += Mat[(row-1)*BLOCKSIZE+col];
+        if (col == 0) newValue += Mat[row*BLOCKSIZE+col+1];
+        else if (col == BLOCKSIZE-1) newValue += Mat[row*BLOCKSIZE+col-1];
+        else newValue += Mat[row*BLOCKSIZE+col+1] + Mat[row*BLOCKSIZE+col-1];
       }
       else{
         if (col == 0)
-          newValue += Mat[row][col+1] + Mat[row+1][col] + Mat[row-1][col];
-        else newValue += Mat[row][col-1] + Mat[row+1][col] + Mat[row-1][col];
+          newValue += Mat[row*BLOCKSIZE+col+1] + Mat[(row+1)*BLOCKSIZE+col] + Mat[(row-1)*BLOCKSIZE+col];
+        else newValue += Mat[row*BLOCKSIZE+col-1] + Mat[(row+1)*BLOCKSIZE+col] + Mat[(row-1)*BLOCKSIZE+col];
       }
     }
   }
   return newValue/5;
-  }
+}
 
 
-__global__ void StencilKernel(Matrix A, Matrix B, dim3 grid, int num_gh, int iter,int size){
+__global__ void StencilKernel(Matrix A, dim3 grid, int num_gh, int iter,int size){
 
   int blockRow = blockIdx.y;
   int blockCol = blockIdx.x;
@@ -75,30 +75,25 @@ __global__ void StencilKernel(Matrix A, Matrix B, dim3 grid, int num_gh, int ite
   int limit_col = blockCol*(BLOCKSIZE-2-2*num_gh)+col;
 
   Matrix submat;
-  Matrix submat2;
 
   submat = GetSubMatrix(A, blockRow, blockCol, num_gh);
-  submat2 = GetSubMatrix(B, blockRow, blockCol, num_gh);
-  __shared__ float Mat[BLOCKSIZE][BLOCKSIZE];
-  __shared__ float Mattemp[BLOCKSIZE][BLOCKSIZE];
+  __shared__ float Mat[BLOCKSIZE*BLOCKSIZE];
+  __shared__ float Mattemp[BLOCKSIZE*BLOCKSIZE];
 
   float newValue = 0;
 
-  Mat[row][col] = GetElement(submat, row, col, blockRow, blockCol, grid, limit_col, limit_row, num_gh, size);
+  Mat[row*BLOCKSIZE+col] = GetElement(submat, row, col, blockRow, blockCol, grid, limit_col, limit_row, num_gh, size);
   __syncthreads();
   int gh_iter = num_gh;
 
     while(gh_iter > 0){
       if (iter > 1){
-        Mattemp[row][col] = GetNextValue(Mat, row, col, limit_col, limit_row, size, newValue);
+        Mattemp[row*BLOCKSIZE+col] = GetNextValue(Mat, row, col, limit_col, limit_row, size, newValue);
         __syncthreads();
-        Mat[row][col] = Mattemp[row][col];
+        Mat[row*BLOCKSIZE+col] = Mattemp[row*BLOCKSIZE+col];
         --gh_iter;
         --iter;
         __syncthreads();
-      //  float *tmp2 = &Mat[0][0];
-      //  (void*)Mat = *Mattemp;
-      //  Mattemp = tmp2;
       } else break;
     }
 
@@ -146,9 +141,6 @@ __global__ void StencilKernel(Matrix A, Matrix B, dim3 grid, int num_gh, int ite
         if (col < limit_dr && row > num_gh && limit_row < size )
           SetElement(submat, row, col, newValue);
   }
-//  float *tmp = submat.elem;
-//  submat.elem = submat2.elem;
-//  submat2.elem = tmp;
 }
 
 __host__ void init(float *t, int size){
@@ -203,16 +195,15 @@ void printResult(float *t, int size, char *filename){
         }
         fprintf(f,"%i\n%i\n%i\n",(int)r,(int)g,(int)b);
       }
-//      fprintf(f,"\n");
    }
    fclose(f);
 }
 
 int main(int argc, char const *argv[]) {
   //Größe des Feldes
-  int size = 128;
+  int size = 1024;
   //Anzahl Iterationen
-  int iter = 20;
+  int iter = 100;
   //Anzahl der Ghostcells (Überlapp)
   int num_gh = 7;
   //Ausgabedatei
@@ -231,35 +222,25 @@ int main(int argc, char const *argv[]) {
   d_mat.stride = d_mat.width;
   cudaMalloc((void**)&d_mat.elem, mem);
 
-  Matrix d_mat2;
-  d_mat2.width = h_mat.width;
-  d_mat2.height = h_mat.height;
-  d_mat2.stride = d_mat.width;
-  cudaMalloc((void**)&d_mat2.elem, mem);
-
   init(h_mat.elem, size);
   cudaMemcpy(d_mat.elem, h_mat.elem, mem, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_mat2.elem, h_mat.elem, mem, cudaMemcpyHostToDevice);
 
   dim3 threads(BLOCKSIZE, BLOCKSIZE);
-  dim3 grid (std::ceil((double)h_mat.width / (threads.x-2
-    -2*num_gh)),std::ceil((double)h_mat.height / (threads.y-2-2*num_gh)));
+  dim3 grid (ceil((double)h_mat.width / (threads.x-2
+    -2*num_gh)), ceil((double)h_mat.height / (threads.y-2-2*num_gh)));
   printf("grid.x = %d\n", grid.x);
   printf("grid.y = %d\n", grid.y);
   while (iter>0){
-    printf("run: %d\n", iter);
-    StencilKernel<<<grid,threads>>>(d_mat, d_mat2, grid, num_gh, iter, size);
+    //printf("run: %d\n", iter);
+    StencilKernel<<<grid,threads>>>(d_mat, grid, num_gh, iter, size);
     iter = iter-1-num_gh;
   }
   cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
   printResult(h_mat.elem, size, filename);
-  //cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
   //print_mat(h_mat);
   printf("Calcs done");
-  //printResult(h_mat.elem, size, filename);
 
   cudaFree (d_mat.elem);
-  cudaFree (d_mat2.elem);
   free (h_mat.elem);
 
   return 0;
