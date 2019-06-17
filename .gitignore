@@ -4,3 +4,4 @@ stencil
 heat2.cu
 .heat_conduction.cu.swp
 .heat_conduction.cu.swo
+out.ppm
