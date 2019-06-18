@@ -1,31 +1,37 @@
 #include <stdio.h>
+#include <cuda.h>
 
-#define BLOCKSIZE 32
+#define BLOCKSIZE 64
 
-typedef struct {
+typedef struct{
   int width;
   int height;
   int stride;
   float* elem;
 } Matrix;
 
-__device__ Matrix GetSubMatrix(Matrix A, int row, int col, int num_gh){
+// Returns submatrix including a float pointer to the first element of the block
+__device__ Matrix GetSubMatrix(Matrix A, int blockRow, int blockCol, int num_gh){
   Matrix submat;
   submat.width = BLOCKSIZE;
   submat.height = BLOCKSIZE;
   submat.stride = A.stride;
-  submat.elem = &A.elem[A.stride * (BLOCKSIZE-2-2*num_gh) * row   + (BLOCKSIZE-2-2*num_gh) * col];
+  submat.elem = &A.elem[A.stride*(BLOCKSIZE-2-2*num_gh)*blockRow+(BLOCKSIZE-2-2*num_gh) * blockCol];
   return submat;
 }
 
+// Writes value to right position in matrix in global memory
 __device__ void SetElement(Matrix A, int row, int col, float value){
   A.elem[row * A.stride + col] = value;
  }
 
+// Returns a (copy) submatrix of matrix in global memory
 __device__ float GetElement(const Matrix A, int row, int col, int blockRow, int blockCol, dim3 grid, int limit_col, int limit_row, int num_gh, int size){
   if (blockRow < grid.y-1 && blockCol < grid.x-1){
     return A.elem[row * A.stride + col];
-  // Ausnahme für submatrix die am Rand liegt ... Auffüllen mit 0.
+
+  // special case for last block in grid
+  // --> fills elements with 0 which are outside the grid
   }else{
     float tmp[BLOCKSIZE*BLOCKSIZE];
     if (limit_col < size && limit_row < size){
@@ -35,8 +41,11 @@ __device__ float GetElement(const Matrix A, int row, int col, int blockRow, int 
   }
 }
 
+// Update function:
+// Calculates one timestep for each point of the submatrix in shared memory
+// Assuption: Zeros around each submatrix
 __device__ float GetNextValue(float Mat[BLOCKSIZE*BLOCKSIZE], int row, int col, int limit_col, int limit_row, int size, float newValue){
-  if (limit_col < size && limit_row < size){
+  if (limit_col < size && limit_row < size){    // only values in grid
     if (row > 0 && row < BLOCKSIZE-1 && col > 0 && col < BLOCKSIZE-1){
       newValue = 2*Mat[row*BLOCKSIZE+col] + Mat[(row-1)*BLOCKSIZE+col] + Mat[(row+1)*BLOCKSIZE+col] + Mat[row*BLOCKSIZE+col-1] + Mat[row*BLOCKSIZE+col+1];
     }else{
@@ -60,6 +69,12 @@ __device__ float GetNextValue(float Mat[BLOCKSIZE*BLOCKSIZE], int row, int col, 
   }
   return newValue/5;
 }
+
+/*__host__ __device__ void swap(float *&a, float *&b) {
+  float* tmp = a;
+  a = b;
+  b = tmp;
+}*/
 
 
 __global__ void StencilKernel(Matrix A, dim3 grid, int num_gh, int iter,int size){
@@ -86,24 +101,31 @@ __global__ void StencilKernel(Matrix A, dim3 grid, int num_gh, int iter,int size
   __syncthreads();
   int gh_iter = num_gh;
 
-    while(gh_iter > 0){
-      if (iter > 1){
-        Mattemp[row*BLOCKSIZE+col] = GetNextValue(Mat, row, col, limit_col, limit_row, size, newValue);
-        __syncthreads();
-        Mat[row*BLOCKSIZE+col] = Mattemp[row*BLOCKSIZE+col];
-        --gh_iter;
-        --iter;
-        __syncthreads();
-      } else break;
+  while(gh_iter > 0){
+    if (iter > 1){
+      Mattemp[row*BLOCKSIZE+col] = GetNextValue(Mat, row, col, limit_col, limit_row, size, newValue);
+      __syncthreads();
+      Mat[row*BLOCKSIZE+col] = Mattemp[row*BLOCKSIZE+col];
+      //float* ptr1 = &Mat[0];
+      //float* ptr2 = &Mattemp[0];
+      //swap(ptr1, ptr2);
+      --gh_iter;
+      --iter;
+      __syncthreads();
+    } else{
+      num_gh = num_gh-gh_iter;
+      break;
     }
+  }
 
   newValue = GetNextValue(Mat, row, col, limit_col, limit_row, size, newValue);
   __syncthreads();
 
-  // Initialize limits for writing back to Matrix A
+  // Initialize limits for writing back to matrix A
   int limit_dr = BLOCKSIZE-1-num_gh; // down & right limit
   // num_gh = up & left limit
 
+  // Write values back to matrix in global memory
   // mitte
   if (blockCol > 0 && blockRow > 0 && blockCol < grid.x-1 && blockRow < grid.y-1){
     if (col < limit_dr && col > num_gh && row > num_gh && row < limit_dr)
@@ -201,13 +223,22 @@ void printResult(float *t, int size, char *filename){
 
 int main(int argc, char const *argv[]) {
   //Größe des Feldes
-  int size = 1024;
+  int size = 512;
   //Anzahl Iterationen
   int iter = 100;
   //Anzahl der Ghostcells (Überlapp)
-  int num_gh = 7;
+  int num_gh = 8;
   //Ausgabedatei
   char *filename="out.ppm";
+
+  // Cache Config
+  cudaFuncSetCacheConfig(StencilKernel,cudaFuncCachePreferNone);
+
+  // Runtime Measurement
+  float time ;
+  cudaEvent_t start, end;
+  cudaEventCreate(&start);
+  cudaEventCreate(&end);
 
   Matrix h_mat;
   h_mat.width = size;
@@ -230,15 +261,20 @@ int main(int argc, char const *argv[]) {
     -2*num_gh)), ceil((double)h_mat.height / (threads.y-2-2*num_gh)));
   printf("grid.x = %d\n", grid.x);
   printf("grid.y = %d\n", grid.y);
+
+  cudaEventRecord(start);
   while (iter>0){
     //printf("run: %d\n", iter);
     StencilKernel<<<grid,threads>>>(d_mat, grid, num_gh, iter, size);
     iter = iter-1-num_gh;
   }
+  cudaEventRecord(end);
+  cudaEventSynchronize(end);
+  cudaEventElapsedTime(&time, start, end);
+
   cudaMemcpy(h_mat.elem, d_mat.elem, mem, cudaMemcpyDeviceToHost);
   printResult(h_mat.elem, size, filename);
-  //print_mat(h_mat);
-  printf("Calcs done");
+  printf("Calcs done in %lf ms\n", time);
 
   cudaFree (d_mat.elem);
   free (h_mat.elem);

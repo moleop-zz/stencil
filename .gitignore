@@ -7,3 +7,8 @@ heat2.cu
 out.ppm
 .metadata/*
 Remote*
+.fuse*
+.~lock*
+heat2*
+.nfs*
+Zeit*
